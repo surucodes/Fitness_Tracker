@@ -62,8 +62,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 from DataTransformation import LowPassFilter, PrincipalComponentAnalysis
 from TemporalAbstraction import NumericalAbstraction
-
-
+from FrequencyAbstraction import FourierTransformation
+from sklearn.cluster import KMeans
 # --------------------------------------------------------------
 # Load data
 # --------------------------------------------------------------
@@ -211,23 +211,165 @@ subset[["acc_r", "gyr_r"]].plot(subplots = True)
 # --------------------------------------------------------------
 # Temporal abstraction
 # --------------------------------------------------------------
+# We are going to compute the rolling mean, rolling standard deviation of the data. This is done to capture the temporal patterns in the data and to create features that can be used in the model. The rolling mean is the average of the data over a certain window size, the rolling standard deviation is the standard deviation of the data over a certain window size.
+# Temporal abstraction through rolling statistics captures essential dynamic patterns from time series data, enabling machine learning models to reason over windows of time rather than isolated points, thereby improving recognition performance in sequential tasks like human activity recognition.
 
+df_temporal = df_squared.copy()
+df_temporal.drop(columns = "duration", inplace=True)
 
+NumAbs = NumericalAbstraction()
+predictor_columns = predictor_columns + ["acc_r", "gyr_r"]
+# Finding an optimal window size is a trial and error process, we can try different values and see which one works.
+ws = int(1000 / 200)
+
+# we are taking the window size = 1 second. i.e # 1000 ms / 200 ms = 5 samples per second, so we take the rolling mean over 5 samples.
+# And if we keep the window size to be too large, we will lose the temporal patterns in the data, as we will be averaging over too many samples and we will lose the initial n number of data samples as well. If we keep it too small, we will not capture the temporal patterns in the data. So we have to find a balance between the two.
+
+for col in predictor_columns:
+    df_temporal = NumAbs.abstract_numerical(
+        df_temporal, [col], window_size = ws, aggregation_function = "mean"
+    )
+    df_temporal = NumAbs.abstract_numerical(
+        df_temporal, [col], window_size = ws, aggregation_function = "std"
+    )
+
+df_temporal
+predictor_columns
+# Here as we take the rolling mean and standard deviation of the data, we are looking at the previous window size to compute present data. now if my previous set were a squat and now im performing a bench press, The value now will be influenced by the previous set, which is not what we want. 
+# So we make subsets based on sets and then compute the rolling mean and standard deviation for each set separately. This way, we are not influenced by the previous set and we are only looking at the current set.
+
+df_temporal_list = []
+for s in df_temporal["set"].unique():
+    subset= df_temporal[df_temporal["set"] == s].copy()
+    for col in predictor_columns:
+        subset = NumAbs.abstract_numerical(
+            subset, [col], window_size=ws, aggregation_function="mean"
+        )
+        subset = NumAbs.abstract_numerical(
+            subset, [col], window_size=ws, aggregation_function="std"
+        )
+    df_temporal_list.append(subset)
+    # This is a list of dataframes, where each dataframe is a subset of the original dataframe based on the set.
+    # We can now concatenate these dataframes to get a single dataframe with all the temporal features.
+df_temporal = pd.concat(df_temporal_list)
+# For the starting of each set , we will have the first ws samples as NaN.
+# We have ensured that no data spill over happens, i.e. the rolling mean and standard deviation is not influenced by the previous set.
+
+subset[["acc_y", "acc_y_temp_mean_ws_5", "acc_y_temp_std_ws_5"]].plot()
 # --------------------------------------------------------------
 # Frequency features
 # --------------------------------------------------------------
+df_freq = df_temporal.copy().reset_index()
+FreqAbs = FourierTransformation()
 
+fs = int(1000 / 200)
+ws = int(2800 / 200)
+# we set the ws to the average length of a repetition. 
+df_freq = FreqAbs.abstract_frequency(
+    df_freq, ["acc_y"], window_size=ws, sampling_rate=fs
+)
 
+subset= df_freq[df_freq["set"] == s].copy()
+subset[['acc_y','acc_y_max_freq',
+       'acc_y_freq_weighted', 'acc_y_pse']].plot( figsize=(20, 10))
+
+df_freq_list = []
+for s in df_freq["set"].unique():
+    print(f"Applying Fourier transformation on set:{s} ")
+    subset = df_freq[df_freq["set"] == s].reset_index(drop = True).copy()
+    subset = FreqAbs.abstract_frequency(
+        subset, predictor_columns, window_size=ws, sampling_rate=fs
+    )
+    df_freq_list.append(subset)
+    
+df_freq = pd.concat(df_freq_list).set_index("epoch (ms)", drop = True)
 # --------------------------------------------------------------
 # Dealing with overlapping windows
 # --------------------------------------------------------------
-
-
+df_freq = df_freq.dropna()
+df_freq = df_freq.iloc[::2]  # We drop every second row to avoid overlapping windows.
 # --------------------------------------------------------------
 # Clustering
 # --------------------------------------------------------------
+# K-means clustering is an unsupervised machine learning algorithm used to group data into clusters based on similarity. It randomly initializes k points (centroids) in the data space, calculates the distance between each data point and each centroid, and assigns each point to its closest centroid. K-means clustering is a popular feature engineering technique used in many applications such as identifying the most important features in a dataset, segmenting customers into different clusters based on their purchase behaviors, anomaly detection, and image compression.
+
+# The Elbow Method, also known as the “elbow curve technique”, is used to determine the optimal number of clusters for a given dataset. It plots the Inertia (sum of squared distances of samples to their closest cluster center) for each k (number of clusters) against k and looks for the “elbow” point in the plot; this point represents the optimal number of clusters. The elbow method works by looping through different values of k and calculating the sum of squared errors for each iteration.
+df_cluster = df_freq.copy()
+
+cluster_columns = ["acc_x", "acc_y", "acc_z"]
+k_values = range(2, 10)
+inertias = []
+for k in k_values:
+    subset = df_cluster[cluster_columns]
+    kmeans = KMeans(n_clusters=k,n_init=20, random_state=0)
+    cluster_labels = kmeans.fit_predict(subset)
+    inertias.append(kmeans.inertia_)
+
+plt.figure(figsize=(10, 10))
+plt.plot(k_values, inertias, marker="o")    
+plt.xlabel("Number of Clusters (k)")        
+plt.ylabel("Inertia (Sum of Squared Distances)")
+plt.title("Elbow Method for K-Means Clustering")
+plt.xticks(k_values)
+plt.show()
+# The optinal numer of clusters looks like 5 as seen in the elow method plot.
+
+kmeans = KMeans(n_clusters=5,n_init=20, random_state=0)
+subset = df_cluster[cluster_columns]
+df_cluster["cluster"] = kmeans.fit_predict(subset)
+# this retuns a new column in the dataframe with the cluster labels for each data point.
+# cluster lables are arbitrary and can be used to identify the clusters in the data.
+
+# plot clusters in 3d:
+fig = plt.figure(figsize=(15, 15))
+ax = fig.add_subplot (projection='3d')
+for c in df_cluster["cluster"].unique():
+    subset = df_cluster[df_cluster["cluster"] == c]
+    ax.scatter(subset["acc_x"], subset["acc_y"], subset["acc_z"], label=f"Cluster {c}")
+ax.set_xlabel("X-axis")
+ax.set_ylabel("Y-axis") 
+ax.set_zlabel("Z-axis")
+ax.set_title("3D Scatter Plot of Clusters")
+plt.legend()    
+plt.show()
+# we can compare the original and kmeans clusters(this plot and the below plot) and we can come to the conclusion that k means did a good job in clustering the data based on the accelerometer data as the cluster 1 captures most of the bench press and ohp data and similarly it has made clusters according to differnet ecxercises/
+
+# plot accelerometer data with cluster labels:
+fig = plt.figure(figsize=(15, 15))
+ax = fig.add_subplot (projection='3d')
+for l in df_cluster["label"].unique():
+    subset = df_cluster[df_cluster["label"] == l]
+    ax.scatter(subset["acc_x"], subset["acc_y"], subset["acc_z"], label=f"Exercise {l}")
+ax.set_xlabel("X-axis")
+ax.set_ylabel("Y-axis") 
+ax.set_zlabel("Z-axis")
+ax.set_title("3D Scatter Plot of Exercises divided into differnt clusters")
+plt.legend()    
+plt.show()
+
+# As we can see, bench press and ohp almost are simiular clusters as they need similar movements and are performed in a similar way.
+# In the same way, we can see that row and deadlift are also similar clusters as they need similar movements and are performed in a similar way.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 # --------------------------------------------------------------
 # Export dataset
 # --------------------------------------------------------------
+df_cluster.to_pickle("../../data/interim/03_data_features.pkl")
