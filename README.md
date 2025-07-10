@@ -19,7 +19,7 @@ This project implements a real-time, ML-powered fitness tracking system that cla
 * 🧠 **Multi-model Classification Pipeline** for exercise recognition
 * 🔄 **Repetition Counting Logic** based on peak detection from signal patterns
 * 📊 **Interactive Visualizations** using Plotly
-* 🌐 **Deployed Streamlit App** for real-time feedback
+* 🌐 **Deployed Streamlit App** for real-time feedback(in progress)
 
 ---
 
